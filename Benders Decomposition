@@ -1,0 +1,100 @@
+# An example of Benders Decomposition on fixed charge transportation problem.
+# The objective is to determine which routes to be opened and
+# the shipment size so that the total cost of meeting demand given the
+# supply constraints is minimized. 
+# Optimal objective in reference : 350
+
+
+from gurobipy import *
+from numpy import *
+# There are I supplier, each has s[i] units of supply and J customers with d[j] demand each.
+s=array([10,30,40,20])
+d=array([20,50,30])
+I=len(s)
+J=len(d)
+c=array([[2,3,4],[3,2,1],[1,4,3],[4,5,2]])
+f=array([10,30,20])
+M=100
+# Set the initial lower bound and upper bound
+UB0=float(inf)
+LB0=float(-inf)
+# Create the Master Problem model
+m=Model()
+# y is the binary variable to indicate whether a link is open or closed
+z=m.addVar(vtype=GRB.INTEGER,name='z')
+# y1 is the initial guess of y
+y1=[[-0.0, -0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [-0.0, 0.0, 1.0]]
+y=m.addVars(I,J,vtype=GRB.BINARY,name='y')
+m.setObjective(z,GRB.MINIMIZE)
+# Create a subproblem model with continuous variables to obtain unbounded rays
+# or calculate the dual value
+# x is the quantity to be transported from supplier i to customer j
+def subproblem(y0):
+    m1=Model()
+    m1.Params.InfUnbdInfo=1
+    u=m1.addVars(I,vtype=GRB.CONTINUOUS,name='u',lb=0)
+    v=m1.addVars(J,vtype=GRB.CONTINUOUS,name='v',lb=0)
+    w=m1.addVars(I,J,vtype=GRB.CONTINUOUS,name='w',lb=0)
+    m1.setObjective(-quicksum(s[i]*u[i] for i in range(I))+
+                    quicksum(d[j]*v[j] for j in range(J))-
+                    quicksum(M*y0[i][j]*w[i,j] for i in range(I) for j in range(J)),
+                    GRB.MAXIMIZE)
+    for i in range(I):
+        for j in range(J):
+            m1.addConstr(-u[i]+v[j]-w[i,j]<=c[i][j])
+    m1.optimize()
+    if m1.status==GRB.UNBOUNDED:
+        return [[u[i].UnbdRay for i in range(I)],[v[j].UnbdRay for j in range(J)],
+                        [[w[i,j].UnbdRay for j in range(J)]for i in range(I)]]
+    elif m1.status==GRB.OPTIMAL:    
+        x=resize([cr.Pi for cr in m1.getConstrs()],(I,J))
+        print('The optimal value is %d' %m.objVal)
+        for i in range(I):
+            for j in range(J):
+                print('x%s%s : %d'%(i,j,x[i][j]))
+
+def Benders(LB,UB,y0):
+    # Create the dual subproblem model
+    m2=Model()    
+    # u,v,w are the dual variables
+    u=m2.addVars(4,vtype=GRB.INTEGER,name='u',lb=0)
+    v=m2.addVars(3,vtype=GRB.INTEGER,name='v',lb=0)
+    w=m2.addVars(4,3,vtype=GRB.INTEGER,name='w',lb=0)                
+    m2.setObjective(-quicksum(s[i]*u[i] for i in range(I))+
+                    quicksum(d[j]*v[j] for j in range(J))-
+                    quicksum(M*y0[i][j]*w[i,j] for i in range(I) for j in range(J)),
+                    GRB.MAXIMIZE)
+    for i in range(I):
+        for j in range(J):
+            m2.addConstr(-u[i]+v[j]-w[i,j]<=c[i][j])
+    m2.optimize()
+    if m2.status == GRB.OPTIMAL:
+        u1=[u[i].x for i in range(I)]
+        v1=[v[j].x for j in range(J)]
+        w1=[[w[i,j].x for j in range(J)] for i in range(I)]
+        m.addConstr(z>=quicksum(f[j]*y[i,j] for i in range(I) for j in range(J))
+        -quicksum(s[i]*u1[i] for i in range(I))+quicksum(d[j]*v1[j]for j in range(J))-
+        M*quicksum(y[i,j]*w1[i][j] for i in range(I) for j in range(J)))
+        UB1=min(UB,m2.objVal+sum(f[j]*y0[i][j] for i in range(I) for j in range(J)))                
+    elif m2.status==GRB.UNBOUNDED:
+        unbdray=subproblem(y0)  
+        u1=unbdray[0]
+        v1=unbdray[1]
+        w1=unbdray[2]
+        m.addConstr(-quicksum(s[i]*u1[i] for i in range(I))+quicksum(d[j]*v1[j] for j in range(J))-
+                   M*quicksum(y[i,j]*w1[i][j] for i in range(I) for j in range(J))<=0)
+        UB1=UB
+    UB1=min(UB,UB1)   
+    m.optimize()
+    if m.status==GRB.INFEASIBLE:
+        print("the model is infeasible")
+    else:
+        LB1=max(m.objVal,LB)
+        y1=[[y[i,j].x for j in range(J)] for i in range(I)]           
+        if LB==UB:            
+            print(y1)
+            subproblem(y1)
+        else:
+            Benders(LB1,UB1,y1)
+             
+Benders(LB0,UB0,y1)
